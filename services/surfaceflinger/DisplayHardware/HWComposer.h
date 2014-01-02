@@ -132,6 +132,10 @@ public:
     int fbCompositionComplete();
     void fbDump(String8& result);
 
+#ifdef ENABLE_HWC_FOR_WFD
+    int setFramebufferHandle(int32_t id, buffer_handle_t handle);
+#endif
+
     // Set the output buffer and acquire fence for a virtual display.
     // Returns INVALID_OPERATION if id is not a virtual display.
     status_t setOutputBuffer(int32_t id, const sp<Fence>& acquireFence,
@@ -160,6 +164,9 @@ public:
         virtual void setDefaultState() = 0;
         virtual void setSkip(bool skip) = 0;
         virtual void setBlending(uint32_t blending) = 0;
+#ifdef ACT_HARDWARE
+        virtual void setAlpha(uint32_t alpha) = 0;
+#endif
         virtual void setTransform(uint32_t transform) = 0;
         virtual void setFrame(const Rect& frame) = 0;
         virtual void setCrop(const FloatRect& crop) = 0;

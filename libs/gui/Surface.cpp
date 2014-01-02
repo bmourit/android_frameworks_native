@@ -344,6 +344,16 @@ int Surface::query(int what, int* value) const {
                 }
                 return err;
             }
+	    case NATIVE_WINDOW_CONSUMER_USAGE_BITS: {
+                status_t err = NO_ERROR;
+                err = mGraphicBufferProducer->query(what, value);
+                if (err == NO_ERROR) {
+                    *value |= mReqUsage;
+                    return NO_ERROR;
+                } else {
+                    return err;
+                }
+	    }
         }
     }
     return mGraphicBufferProducer->query(what, value);
@@ -760,6 +770,7 @@ status_t Surface::lock(
         }
 
         // figure out if we can copy the frontbuffer back
+        int backBufferSlot(getSlotFromBufferLocked(backBuffer.get()));
         const sp<GraphicBuffer>& frontBuffer(mPostedBuffer);
         const bool canCopyBack = (frontBuffer != 0 &&
                 backBuffer->width  == frontBuffer->width &&
@@ -767,15 +778,19 @@ status_t Surface::lock(
                 backBuffer->format == frontBuffer->format);
 
         if (canCopyBack) {
-            // copy the area that is invalid and not repainted this round
-            const Region copyback(mDirtyRegion.subtract(newDirtyRegion));
+            Mutex::Autolock lock(mMutex);
+            Region oldDirtyRegion;
+            for(int i = 0 ; i < NUM_BUFFER_SLOTS; i++ ) {
+                if(i != backBufferSlot && !mSlots[i].dirtyRegion.isEmpty())
+                    oldDirtyRegion.orSelf(mSlots[i].dirtyRegion);
+            }
+            const Region copyback(oldDirtyRegion.subtract(newDirtyRegion));
             if (!copyback.isEmpty())
                 copyBlt(backBuffer, frontBuffer, copyback);
         } else {
             // if we can't copy-back anything, modify the user's dirty
             // region to make sure they redraw the whole buffer
             newDirtyRegion.set(bounds);
-            mDirtyRegion.clear();
             Mutex::Autolock lock(mMutex);
             for (size_t i=0 ; i<NUM_BUFFER_SLOTS ; i++) {
                 mSlots[i].dirtyRegion.clear();
@@ -785,15 +800,9 @@ status_t Surface::lock(
 
         { // scope for the lock
             Mutex::Autolock lock(mMutex);
-            int backBufferSlot(getSlotFromBufferLocked(backBuffer.get()));
-            if (backBufferSlot >= 0) {
-                Region& dirtyRegion(mSlots[backBufferSlot].dirtyRegion);
-                mDirtyRegion.subtract(dirtyRegion);
-                dirtyRegion = newDirtyRegion;
-            }
+            mSlots[backBufferSlot].dirtyRegion = newDirtyRegion;
         }
 
-        mDirtyRegion.orSelf(newDirtyRegion);
         if (inOutDirtyBounds) {
             *inOutDirtyBounds = newDirtyRegion.getBounds();
         }

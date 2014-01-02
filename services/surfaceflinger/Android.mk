@@ -51,12 +51,28 @@ ifeq ($(TARGET_DISABLE_TRIPLE_BUFFERING),true)
 	LOCAL_CFLAGS += -DTARGET_DISABLE_TRIPLE_BUFFERING
 endif
 
+ifeq ($(BOARD_EGL_NEEDS_LEGACY_FB),true)
+	LOCAL_CFLAGS += -DBOARD_EGL_NEEDS_LEGACY_FB
+endif
+
+ifeq ($(TARGET_FORCE_HWC_FOR_VIRTUAL_DISPLAYS),true)
+    LOCAL_CFLAGS += -DFORCE_HWC_COPY_FOR_VIRTUAL_DISPLAYS
+endif
+
+ifeq ($(BOARD_EGL_NEEDS_FNW),true)
+    LOCAL_CFLAGS += -DEGL_NEEDS_FNW
+endif
+
 ifneq ($(NUM_FRAMEBUFFER_SURFACE_BUFFERS),)
   LOCAL_CFLAGS += -DNUM_FRAMEBUFFER_SURFACE_BUFFERS=$(NUM_FRAMEBUFFER_SURFACE_BUFFERS)
 endif
 
 ifeq ($(TARGET_RUNNING_WITHOUT_SYNC_FRAMEWORK),true)
     LOCAL_CFLAGS += -DRUNNING_WITHOUT_SYNC_FRAMEWORK
+endif
+
+ifeq ($(BOARD_USE_MHEAP_SCREENSHOT),true)
+    LOCAL_CFLAGS += -DUSE_MHEAP_SCREENSHOT
 endif
 
 # See build/target/board/generic/BoardConfig.mk for a description of this setting.
@@ -81,6 +97,9 @@ endif
 
 LOCAL_CFLAGS += -fvisibility=hidden
 
+# HWComposer.cpp contains 2 pretty bad aliasing violations
+LOCAL_CFLAGS += -fno-strict-aliasing
+
 LOCAL_SHARED_LIBRARIES := \
 	libcutils \
 	liblog \
@@ -93,6 +112,11 @@ LOCAL_SHARED_LIBRARIES := \
 	libbinder \
 	libui \
 	libgui
+
+ifeq ($(BOARD_USE_HWC_FOR_WFD), true)
+        LOCAL_CFLAGS += -DENABLE_HWC_FOR_WFD
+        LOCAL_SHARED_LIBRARIES += libsync
+endif
 
 LOCAL_MODULE:= libsurfaceflinger
 

@@ -29,6 +29,14 @@
 
 #include <gui/Surface.h>
 
+#ifdef EGL_NEEDS_FNW
+#include <ui/FramebufferNativeWindow.h>
+#endif
+
+#include <GLES/gl.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+
 #include <hardware/gralloc.h>
 
 #include "DisplayHardware/DisplaySurface.h"
@@ -74,7 +82,12 @@ DisplayDevice::DisplayDevice(
       mOrientation()
 {
     mNativeWindow = new Surface(producer, false);
+
+#ifndef EGL_NEEDS_FNW
     ANativeWindow* const window = mNativeWindow.get();
+#else
+    ANativeWindow* const window = new FramebufferNativeWindow();
+#endif
 
     int format;
     window->query(window, NATIVE_WINDOW_FORMAT, &format);
@@ -126,6 +139,19 @@ DisplayDevice::DisplayDevice(
 
     // initialize the display orientation transform.
     setProjection(DisplayState::eOrientationDefault, mViewport, mFrame);
+
+#ifdef EGL_ANDROID_swap_rectangle
+    if (eglSetSwapRectangleANDROID(display, surface,
+            0, 0, mDisplayWidth, mDisplayHeight) == EGL_TRUE) {
+        // This could fail if this extension is not supported by this
+        // specific surface (of config)
+        mFlags |= SWAP_RECTANGLE;
+    }
+    // when we have the choice between PARTIAL_UPDATES and SWAP_RECTANGLE
+    // choose PARTIAL_UPDATES, which should be more efficient
+    if (mFlags & PARTIAL_UPDATES)
+        mFlags &= ~SWAP_RECTANGLE;
+#endif
 }
 
 DisplayDevice::~DisplayDevice() {
@@ -222,6 +248,17 @@ status_t DisplayDevice::prepareFrame(const HWComposer& hwc) const {
 }
 
 void DisplayDevice::swapBuffers(HWComposer& hwc) const {
+
+#ifdef ENABLE_HWC_FOR_WFD
+    if (mBufferHandle) {
+        // bypass overlay virtual display to 3D to do compostion.
+        if (!strncmp(mDisplayName, "Overlay", 7)) {
+            hwc.setFramebufferHandle(mHwcDisplayId, NULL);
+        } else {
+            hwc.setFramebufferHandle(mHwcDisplayId, mBufferHandle);
+        }
+    }
+#endif
     // We need to call eglSwapBuffers() if:
     //  (1) we don't have a hardware composer, or
     //  (2) we did GLES composition this frame, and either
@@ -367,6 +404,20 @@ status_t DisplayDevice::orientationToTransfrom(
         int orientation, int w, int h, Transform* tr)
 {
     uint32_t flags = 0;
+    char value[PROPERTY_VALUE_MAX];
+    property_get("ro.sf.hwrotation", value, "0");
+    int additionalRot = atoi(value);
+
+    if (additionalRot) {
+        additionalRot /= 90;
+        if (orientation == DisplayState::eOrientationUnchanged) {
+            orientation = additionalRot;
+        } else {
+            orientation += additionalRot;
+            orientation %= 4;
+        }
+    }
+
     switch (orientation) {
     case DisplayState::eOrientationDefault:
         flags = Transform::ROT_0;
@@ -383,6 +434,7 @@ status_t DisplayDevice::orientationToTransfrom(
     default:
         return BAD_VALUE;
     }
+
     tr->set(flags, w, h);
     return NO_ERROR;
 }

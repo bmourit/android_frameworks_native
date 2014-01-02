@@ -265,6 +265,12 @@ public:
      */
     Rect getContentCrop() const;
 
+    /*
+     * returns the transform bits (90 rotation / h-flip / v-flip) of the
+     * layer's content
+     */
+    virtual uint32_t getContentTransform() const;
+
     // -----------------------------------------------------------------------
 
     void clearWithOpenGL(const sp<const DisplayDevice>& hw, const Region& clip) const;

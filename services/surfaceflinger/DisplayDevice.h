@@ -159,6 +159,9 @@ public:
      */
     uint32_t getPageFlipCount() const;
     void dump(String8& result) const;
+#ifdef ACT_HARDWARE
+	ANativeWindow * getNativeWindow()const	{ return mNativeWindow.get(); }
+#endif
 
 private:
     /*
@@ -214,6 +217,10 @@ private:
     Rect mScissor;
     Transform mGlobalTransform;
     bool mNeedsFiltering;
+
+#ifdef ENABLE_HWC_FOR_WFD
+    buffer_handle_t mBufferHandle;
+#endif
 };
 
 }; // namespace android

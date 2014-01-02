@@ -61,6 +61,9 @@ public:
 
     // for debugging only
     int getCurrentBufferIndex() const;
+    
+    //for gpu autotest
+    ANativeWindowBuffer* getCurrentBufferAddress();
 
 private:
     friend class LightRefBase<FramebufferNativeWindow>;    

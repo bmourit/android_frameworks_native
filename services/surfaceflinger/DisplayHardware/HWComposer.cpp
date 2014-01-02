@@ -45,6 +45,7 @@
 
 #include "../Layer.h"           // needed only for debugging
 #include "../SurfaceFlinger.h"
+#include <hardware/gralloc_priv.h>
 
 namespace android {
 
@@ -103,6 +104,9 @@ HWComposer::HWComposer(
     mDebugForceFakeVSync = atoi(value);
 
     bool needVSyncThread = true;
+#ifdef ACT_HARDWARE
+    int mHw_vsync = 0;
+#endif
 
     // Note: some devices may insist that the FB HAL be opened before HWC.
     int fberr = loadFbHalModule();
@@ -112,8 +116,10 @@ HWComposer::HWComposer(
         // close FB HAL if we don't needed it.
         // FIXME: this is temporary until we're not forced to open FB HAL
         // before HWC.
+#ifndef ACT_HARDWARE
         framebuffer_close(mFbDev);
         mFbDev = NULL;
+#endif
     }
 
     // If we have no HWC, or a pre-1.1 HWC, an FB dev is mandatory.
@@ -146,7 +152,17 @@ HWComposer::HWComposer(
         }
 
         // don't need a vsync thread if we have a hardware composer
+#ifdef ACT_HARDWARE
+        property_get("ro.config.used_hw_vsync", value, "0");
+        mHw_vsync = atoi(value);
+        if (mHw_vsync) {
+            needVSyncThread = false;
+        } else {
+            needVSyncThread = true;
+        }
+#else
         needVSyncThread = false;
+#endif
         // always turn vsync off when we start
         eventControl(HWC_DISPLAY_PRIMARY, HWC_EVENT_VSYNC, 0);
 
@@ -157,7 +173,11 @@ HWComposer::HWComposer(
             mNumDisplays = MAX_HWC_DISPLAYS;
         } else if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
             // 1.1 adds support for multiple displays
+#ifdef ENABLE_HWC_FOR_WFD
+            mNumDisplays = MAX_HWC_DISPLAYS;
+#else
             mNumDisplays = NUM_BUILTIN_DISPLAYS;
+#endif
         } else {
             mNumDisplays = 1;
         }
@@ -605,7 +625,7 @@ status_t HWComposer::prepare() {
         mLists[i] = disp.list;
         if (mLists[i]) {
             if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_3)) {
-                mLists[i]->outbuf = NULL;
+                mLists[i]->outbuf = disp.outbufHandle;
                 mLists[i]->outbufAcquireFenceFd = -1;
             } else if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
                 // garbage data to catch improper use
@@ -775,13 +795,159 @@ bool HWComposer::supportsFramebufferTarget() const {
 
 int HWComposer::fbPost(int32_t id,
         const sp<Fence>& acquireFence, const sp<GraphicBuffer>& buffer) {
+    int err = 0;
     if (mHwc && hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
         return setFramebufferTarget(id, acquireFence, buffer);
     } else {
         acquireFence->waitForever("HWComposer::fbPost");
         return mFbDev->post(mFbDev, buffer->handle);
     }
+#ifdef ACT_HARDWARE
+	if (mHwc && id == HWC_DISPLAY_PRIMARY)
+	{
+		sp<const DisplayDevice> primary_hw(mFlinger->getDefaultDisplayDevice());
+		if(primary_hw == 0)
+			return -EINVAL;
+		hwc_rect_t sRect, sCrop;
+		private_handle_t *  handle;
+		handle = (private_handle_t*)(buffer->handle);
+		
+		int srcOri;
+		switch(primary_hw->getOrientation())
+		{
+			case 1:
+				srcOri = HAL_TRANSFORM_ROT_90; 
+				sRect.left = sRect.top = 0;
+				sRect.right = handle->height;
+				sRect.bottom = handle->width;
+				break;
+			case 2:
+				srcOri = HAL_TRANSFORM_ROT_180;
+				sRect.left = sRect.top = 0;
+				sRect.right = handle->width;
+				sRect.bottom = handle->height;
+				break;
+			case 3:
+				srcOri = HAL_TRANSFORM_ROT_270;
+				sRect.left = sRect.top = 0;
+				sRect.right = handle->height;
+				sRect.bottom = handle->width;
+				break;
+			case 0:
+			default:
+				srcOri = 0;
+				sRect.left = sRect.top = 0;
+				sRect.right = handle->width;
+				sRect.bottom = handle->height;
+				break;
+		}
+		sCrop.left = sCrop.top = 0;
+		sCrop.right = handle->width;
+		sCrop.bottom = handle->height;
+		
+		for(int dpy = 0; dpy < (mFlinger->getDisplays().size()); dpy++)
+		{
+			sp<DisplayDevice> hw((mFlinger->getDisplays())[dpy]);
+			int32_t type = hw->getDisplayType();
+			if(type >= DisplayDevice::DISPLAY_VIRTUAL)
+			{
+				ANativeWindow * window = hw->getNativeWindow();
+				int fenceFd = -1;	
+				ANativeWindowBuffer * vBuffer = NULL;
+				int rel = window->dequeueBuffer(window, &vBuffer, &fenceFd);
+				if (rel < 0)
+				{
+					ALOGE("%s(%d): Dequeue native buffer failed", __FUNCTION__, __LINE__);
+					continue;
+				}			
+				if (fenceFd != -1) {
+					rel = sync_wait(fenceFd, 2000);			
+					if (rel < 0 && errno == ETIME) {
+						ALOGW("Wait for fence fd=%d timeout", fenceFd);			
+						// Wait for ever. 
+						rel = sync_wait(fenceFd, -1);
+					}			
+					close(fenceFd);
+				}
+				
+				if(vBuffer)
+				{
+					private_handle_t * vhandle;
+					vhandle = (private_handle_t*)(vBuffer->handle);
+					hwc_rect_t dRect, dCrop;
+										
+					dRect.left = dRect.top = 0;
+					dRect.right = vhandle->width;
+					dRect.bottom = vhandle->height;
+					
+					float hscale, vscale, scale;
+					int w, h;
+					
+					hscale = (float)(dRect.right - dRect.left) / (float)(sRect.right - sRect.left);
+					vscale = (float)(dRect.bottom - dRect.top) / (float)(sRect.bottom - sRect.top);
+					scale = hscale < vscale ? hscale : vscale;
+						
+					w = (sRect.right - sRect.left) * scale;
+					h = (sRect.bottom - sRect.left) * scale;
+						
+					dCrop.left = (dRect.right - dRect.left - w) / 2;
+					dCrop.top = (dRect.bottom - dRect.top - h) / 2;
+					dCrop.right = dCrop.left + w;
+					dCrop.bottom = dCrop.top + h;			
+					
+					if ( dCrop.right != vhandle->Crop.right 	||
+						dCrop.bottom != vhandle->Crop.bottom||
+						dCrop.left != vhandle->Crop.left 	||
+						dCrop.top != vhandle->Crop.top)	
+					{
+						vhandle->Crop.left = dCrop.left;
+						vhandle->Crop.top = dCrop.top;
+						vhandle->Crop.right = dCrop.right;
+						vhandle->Crop.bottom = dCrop.bottom;
+						memset((void*)(vhandle->base), 0, vhandle->size);
+					}
+					
+					err = mHwc->stretchBlit(mHwc, vhandle, handle, &dCrop, &sCrop, srcOri);	
+					
+					window->queueBuffer(window, vBuffer, -1);
+				}
+				else
+				{
+					ALOGE("dequeue NULL native buffer");
+				}
+			}
+		}
+	}
+	return err;
+#endif
 }
+#ifdef ENABLE_HWC_FOR_WFD
+int HWComposer::setFramebufferHandle(int32_t id, buffer_handle_t handle)
+{
+    if (mHwc && hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
+        if (uint32_t(id)>31 || !mAllocatedDisplayIDs.hasBit(id)) {
+            return BAD_INDEX;
+        }
+
+        DisplayData& disp(mDisplayData[id]);
+        if (!disp.framebufferTarget) {
+          // this should never happen, but apparently eglCreateWindowSurface()
+          // triggers a Surface::queueBuffer()  on some
+          // devices (!?) -- log and ignore.
+          ALOGE("HWComposer: framebufferTarget is null");
+//        CallStack stack;
+//        stack.update();
+//        stack.dump("");
+          return NO_ERROR;
+        }
+
+        disp.fbTargetHandle = handle;
+        disp.framebufferTarget->handle = disp.fbTargetHandle;
+    }
+
+    return 0;
+}
+#endif
 
 int HWComposer::fbCompositionComplete() {
     if (mHwc && hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1))
@@ -904,9 +1070,23 @@ public:
             getLayer()->flags &= ~HWC_SKIP_LAYER;
         }
     }
+//#ifdef ACT_HARDWARE
+  //  virtual void setLayerFlags(int flags , bool enable) {
+    //    if (enable) {
+      //      getLayer()->flags |= flags;
+        //} else {
+          //  getLayer()->flags &= ~flags;
+       // }
+   // }
+//#endif
     virtual void setBlending(uint32_t blending) {
         getLayer()->blending = blending;
     }
+#ifdef ACT_HARDWARE
+    virtual void setAlpha(uint32_t alpha) {
+        getLayer()->alpha = alpha;
+    }
+#endif
     virtual void setTransform(uint32_t transform) {
         getLayer()->transform = transform;
     }
@@ -918,7 +1098,7 @@ public:
             getLayer()->sourceCropf = reinterpret_cast<hwc_frect_t const&>(crop);
         } else {
             /*
-             * Since h/w composer didn't support a flot crop rect before version 1.3,
+             * Since h/w composer didn't support a float crop rect before version 1.3,
              * using integer coordinates instead produces a different output from the GL code in
              * Layer::drawWithOpenGL(). The difference can be large if the buffer crop to
              * window size ratio is large and a window crop is defined

@@ -366,6 +366,9 @@ void Layer::setGeometry(
     layer.setFrame(tr.transform(frame));
     layer.setCrop(computeCrop(hw));
     layer.setPlaneAlpha(s.alpha);
+#ifdef ACT_HARDWARE
+    layer.setAlpha(s.alpha);
+#endif
 
     /*
      * Transformations are applied in this order:
