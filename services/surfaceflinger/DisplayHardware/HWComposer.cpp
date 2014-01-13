@@ -173,11 +173,7 @@ HWComposer::HWComposer(
             mNumDisplays = MAX_HWC_DISPLAYS;
         } else if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
             // 1.1 adds support for multiple displays
-#ifdef ENABLE_HWC_FOR_WFD
-            mNumDisplays = MAX_HWC_DISPLAYS;
-#else
             mNumDisplays = NUM_BUILTIN_DISPLAYS;
-#endif
         } else {
             mNumDisplays = 1;
         }
@@ -415,8 +411,12 @@ status_t HWComposer::queryDisplayProperties(int disp) {
 
 status_t HWComposer::setVirtualDisplayProperties(int32_t id,
         uint32_t w, uint32_t h, uint32_t format) {
-    if (id < VIRTUAL_DISPLAY_ID_BASE || id >= int32_t(mNumDisplays) ||
-            !mAllocatedDisplayIDs.hasBit(id)) {
+#ifndef QCOM_HARDWARE
+    if (id < VIRTUAL_DISPLAY_ID_BASE) {
+        return BAD_INDEX;
+    }
+#endif
+    if (id >= int32_t(mNumDisplays) || !mAllocatedDisplayIDs.hasBit(id)) {
         return BAD_INDEX;
     }
     mDisplayData[id].width = w;
@@ -496,38 +496,47 @@ void HWComposer::eventControl(int disp, int event, int enabled) {
               event, disp, enabled);
         return;
     }
-    if (event != EVENT_VSYNC) {
-        ALOGW("eventControl got unexpected event %d (disp=%d en=%d)",
-              event, disp, enabled);
-        return;
-    }
     status_t err = NO_ERROR;
-    if (mHwc && !mDebugForceFakeVSync) {
-        // NOTE: we use our own internal lock here because we have to call
-        // into the HWC with the lock held, and we want to make sure
-        // that even if HWC blocks (which it shouldn't), it won't
-        // affect other threads.
-        Mutex::Autolock _l(mEventControlLock);
-        const int32_t eventBit = 1UL << event;
-        const int32_t newValue = enabled ? eventBit : 0;
-        const int32_t oldValue = mDisplayData[disp].events & eventBit;
-        if (newValue != oldValue) {
-            ATRACE_CALL();
-            err = mHwc->eventControl(mHwc, disp, event, enabled);
-            if (!err) {
-                int32_t& events(mDisplayData[disp].events);
-                events = (events & ~eventBit) | newValue;
+    switch(event) {
+        case EVENT_VSYNC:
+            if (mHwc && !mDebugForceFakeVSync) {
+                // NOTE: we use our own internal lock here because we have to
+                // call into the HWC with the lock held, and we want to make
+                // sure that even if HWC blocks (which it shouldn't), it won't
+                // affect other threads.
+                Mutex::Autolock _l(mEventControlLock);
+                const int32_t eventBit = 1UL << event;
+                const int32_t newValue = enabled ? eventBit : 0;
+                const int32_t oldValue = mDisplayData[disp].events & eventBit;
+                if (newValue != oldValue) {
+                    ATRACE_CALL();
+                    err = mHwc->eventControl(mHwc, disp, event, enabled);
+                    if (!err) {
+                        int32_t& events(mDisplayData[disp].events);
+                        events = (events & ~eventBit) | newValue;
+                    }
+                }
+                // error here should not happen -- not sure what we should
+                // do if it does.
+                ALOGE_IF(err, "eventControl(%d, %d) failed %s",
+                         event, enabled, strerror(-err));
             }
-        }
-        // error here should not happen -- not sure what we should
-        // do if it does.
-        ALOGE_IF(err, "eventControl(%d, %d) failed %s",
-                event, enabled, strerror(-err));
-    }
 
-    if (err == NO_ERROR && mVSyncThread != NULL) {
-        mVSyncThread->setEnabled(enabled);
+            if (err == NO_ERROR && mVSyncThread != NULL) {
+                mVSyncThread->setEnabled(enabled);
+            }
+            break;
+        case EVENT_ORIENTATION:
+            // Orientation event
+            if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0))
+              err = mHwc->eventControl(mHwc, disp, event, enabled);
+            break;
+        default:
+            ALOGW("eventControl got unexpected event %d (disp=%d en=%d)",
+                    event, disp, enabled);
+            break;
     }
+    return;
 }
 
 status_t HWComposer::createWorkList(int32_t id, size_t numLayers) {
@@ -654,18 +663,26 @@ status_t HWComposer::prepare() {
             disp.hasFbComp = false;
             disp.hasOvComp = false;
             if (disp.list) {
-                for (size_t i=0 ; i<disp.list->numHwLayers ; i++) {
-                    hwc_layer_1_t& l = disp.list->hwLayers[i];
+                for (size_t j=0 ; j<disp.list->numHwLayers ; j++) {
+                    hwc_layer_1_t& l = disp.list->hwLayers[j];
 
                     //ALOGD("prepare: %d, type=%d, handle=%p",
-                    //        i, l.compositionType, l.handle);
+                    //        j, l.compositionType, l.handle);
 
-                    if (l.flags & HWC_SKIP_LAYER) {
+                    if ((i == DisplayDevice::DISPLAY_PRIMARY) &&
+                                l.flags & HWC_SKIP_LAYER) {
                         l.compositionType = HWC_FRAMEBUFFER;
                     }
                     if (l.compositionType == HWC_FRAMEBUFFER) {
                         disp.hasFbComp = true;
                     }
+#ifdef QCOM_HARDWARE
+                    // If the composition type is BLIT, we set this to
+                    // trigger a FLIP
+                    if(l.compositionType == HWC_BLIT) {
+                        disp.hasFbComp = true;
+                    }
+#endif
                     if (l.compositionType == HWC_OVERLAY) {
                         disp.hasOvComp = true;
                     }
@@ -795,159 +812,137 @@ bool HWComposer::supportsFramebufferTarget() const {
 
 int HWComposer::fbPost(int32_t id,
         const sp<Fence>& acquireFence, const sp<GraphicBuffer>& buffer) {
-    int err = 0;
+            int err = 0;
+            bool isGles = hasGlesComposition(id);
     if (mHwc && hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
-        return setFramebufferTarget(id, acquireFence, buffer);
+	if (isGles) {
+	    acquireFence->waitForever("HWComposer::fbPost");
+	}
+	if (mHwc && mHwc->fbPrePost) {
+	    err = mHwc->fbPrePost(mHwc,buffer->handle);
+	    if (err) {
+		ALOGE("mHwc fbPrePost failed (%s)", strerror(-err));
+		return err;
+	    }
+	}
+	mFbDev->post(mFbDev, buffer->handle);
+	err = setFramebufferTarget(id, acquireFence, buffer);
     } else {
         acquireFence->waitForever("HWComposer::fbPost");
-        return mFbDev->post(mFbDev, buffer->handle);
+        if (mHwc && mHwc->fbPrePost) {
+            err = mHwc->fbPrePost(mHwc, buffer->handle);
+            if (err) {
+                ALOGE("mHwc fbPrePost failed (%s)", strerror(-err));
+                return err;
+            }
+        }
+	err = mFbDev->post(mFbDev, buffer->handle);
     }
-#ifdef ACT_HARDWARE
-	if (mHwc && id == HWC_DISPLAY_PRIMARY)
-	{
-		sp<const DisplayDevice> primary_hw(mFlinger->getDefaultDisplayDevice());
-		if(primary_hw == 0)
-			return -EINVAL;
-		hwc_rect_t sRect, sCrop;
-		private_handle_t *  handle;
-		handle = (private_handle_t*)(buffer->handle);
-		
-		int srcOri;
-		switch(primary_hw->getOrientation())
-		{
-			case 1:
-				srcOri = HAL_TRANSFORM_ROT_90; 
-				sRect.left = sRect.top = 0;
-				sRect.right = handle->height;
-				sRect.bottom = handle->width;
-				break;
-			case 2:
-				srcOri = HAL_TRANSFORM_ROT_180;
-				sRect.left = sRect.top = 0;
-				sRect.right = handle->width;
-				sRect.bottom = handle->height;
-				break;
-			case 3:
-				srcOri = HAL_TRANSFORM_ROT_270;
-				sRect.left = sRect.top = 0;
-				sRect.right = handle->height;
-				sRect.bottom = handle->width;
-				break;
-			case 0:
-			default:
-				srcOri = 0;
-				sRect.left = sRect.top = 0;
-				sRect.right = handle->width;
-				sRect.bottom = handle->height;
-				break;
-		}
-		sCrop.left = sCrop.top = 0;
-		sCrop.right = handle->width;
-		sCrop.bottom = handle->height;
-		
-		for(int dpy = 0; dpy < (mFlinger->getDisplays().size()); dpy++)
-		{
-			sp<DisplayDevice> hw((mFlinger->getDisplays())[dpy]);
-			int32_t type = hw->getDisplayType();
-			if(type >= DisplayDevice::DISPLAY_VIRTUAL)
-			{
-				ANativeWindow * window = hw->getNativeWindow();
-				int fenceFd = -1;	
-				ANativeWindowBuffer * vBuffer = NULL;
-				int rel = window->dequeueBuffer(window, &vBuffer, &fenceFd);
-				if (rel < 0)
-				{
-					ALOGE("%s(%d): Dequeue native buffer failed", __FUNCTION__, __LINE__);
-					continue;
-				}			
-				if (fenceFd != -1) {
-					rel = sync_wait(fenceFd, 2000);			
-					if (rel < 0 && errno == ETIME) {
-						ALOGW("Wait for fence fd=%d timeout", fenceFd);			
-						// Wait for ever. 
-						rel = sync_wait(fenceFd, -1);
-					}			
-					close(fenceFd);
-				}
-				
-				if(vBuffer)
-				{
-					private_handle_t * vhandle;
-					vhandle = (private_handle_t*)(vBuffer->handle);
-					hwc_rect_t dRect, dCrop;
-										
-					dRect.left = dRect.top = 0;
-					dRect.right = vhandle->width;
-					dRect.bottom = vhandle->height;
-					
-					float hscale, vscale, scale;
-					int w, h;
-					
-					hscale = (float)(dRect.right - dRect.left) / (float)(sRect.right - sRect.left);
-					vscale = (float)(dRect.bottom - dRect.top) / (float)(sRect.bottom - sRect.top);
-					scale = hscale < vscale ? hscale : vscale;
-						
-					w = (sRect.right - sRect.left) * scale;
-					h = (sRect.bottom - sRect.left) * scale;
-						
-					dCrop.left = (dRect.right - dRect.left - w) / 2;
-					dCrop.top = (dRect.bottom - dRect.top - h) / 2;
-					dCrop.right = dCrop.left + w;
-					dCrop.bottom = dCrop.top + h;			
-					
-					if ( dCrop.right != vhandle->Crop.right 	||
-						dCrop.bottom != vhandle->Crop.bottom||
-						dCrop.left != vhandle->Crop.left 	||
-						dCrop.top != vhandle->Crop.top)	
-					{
-						vhandle->Crop.left = dCrop.left;
-						vhandle->Crop.top = dCrop.top;
-						vhandle->Crop.right = dCrop.right;
-						vhandle->Crop.bottom = dCrop.bottom;
-						memset((void*)(vhandle->base), 0, vhandle->size);
-					}
-					
-					err = mHwc->stretchBlit(mHwc, vhandle, handle, &dCrop, &sCrop, srcOri);	
-					
-					window->queueBuffer(window, vBuffer, -1);
-				}
-				else
-				{
-					ALOGE("dequeue NULL native buffer");
-				}
-			}
-		}
+
+    if (mHwc && id == HWC_DISPLAY_PRIMARY) {
+	sp<const DisplayDevice> primary_hw(mFlinger->getDefaultDisplayDevice());
+	if(primary_hw == 0)
+	return -EINVAL;
+
+	hwc_rect_t sRect, sCrop;
+	private_handle_t *  handle;
+	handle = (private_handle_t*)(buffer->handle);
+
+	int srcOri;
+	switch (primary_hw->getOrientation()) {
+	    case 1:
+		srcOri = HAL_TRANSFORM_ROT_90;
+		sRect.left = sRect.top = 0;
+		sRect.right = handle->height;
+		sRect.bottom = handle->width;
+		break;
+	    case 2:
+		srcOri = HAL_TRANSFORM_ROT_180;
+		sRect.left = sRect.top = 0;
+		sRect.right = handle->width;
+		sRect.bottom = handle->height;
+		break;
+	    case 3:
+		srcOri = HAL_TRANSFORM_ROT_270;
+		sRect.left = sRect.top = 0;
+		sRect.right = handle->height;
+		sRect.bottom = handle->width;
+		break;
+	    case 0:
+		default:
+		    srcOri = 0;
+		    sRect.left = sRect.top = 0;
+		    sRect.right = handle->width;
+		    sRect.bottom = handle->height;
+		    break;
 	}
-	return err;
-#endif
-}
-#ifdef ENABLE_HWC_FOR_WFD
-int HWComposer::setFramebufferHandle(int32_t id, buffer_handle_t handle)
-{
-    if (mHwc && hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
-        if (uint32_t(id)>31 || !mAllocatedDisplayIDs.hasBit(id)) {
-            return BAD_INDEX;
-        }
+	sCrop.left = sCrop.top = 0;
+	sCrop.right = handle->width;
+	sCrop.bottom = handle->height;
 
-        DisplayData& disp(mDisplayData[id]);
-        if (!disp.framebufferTarget) {
-          // this should never happen, but apparently eglCreateWindowSurface()
-          // triggers a Surface::queueBuffer()  on some
-          // devices (!?) -- log and ignore.
-          ALOGE("HWComposer: framebufferTarget is null");
-//        CallStack stack;
-//        stack.update();
-//        stack.dump("");
-          return NO_ERROR;
-        }
+	for (int dpy = 0; dpy < (mFlinger->getDisplays().size()); dpy++) {
+	    sp<DisplayDevice> hw((mFlinger->getDisplays())[dpy]);
+	    int32_t type = hw->getDisplayType();
+	    if (type >= DisplayDevice::DISPLAY_VIRTUAL) {
+		ANativeWindow * window = hw->getNativeWindow();
+		int fenceFd = -1;
+		ANativeWindowBuffer * vBuffer = NULL;
+		int rel = window->dequeueBuffer(window, &vBuffer, &fenceFd);
+		if (rel < 0) {
+		    ALOGE("%s(%d): Dequeue native buffer failed", __FUNCTION__, __LINE__);
+		    continue;
+		}
+		if (fenceFd != -1) {
+		    rel = sync_wait(fenceFd, 2000);
+		    if (rel < 0 && errno == ETIME) {
+			ALOGW("Wait for fence fd=%d timeout", fenceFd);
+			// Wait forever. 
+			rel = sync_wait(fenceFd, -1);
+		    }
+		    close(fenceFd);
+		}
+		if (vBuffer) {
+		    private_handle_t * vhandle;
+		    vhandle = (private_handle_t*)(vBuffer->handle);
+		    hwc_rect_t dRect, dCrop;
+		    dRect.left = dRect.top = 0;
+		    dRect.right = vhandle->width;
+		    dRect.bottom = vhandle->height;
 
-        disp.fbTargetHandle = handle;
-        disp.framebufferTarget->handle = disp.fbTargetHandle;
+		    float hscale, vscale, scale;
+		    hscale = (float)(dRect.right - dRect.left) / (float)(sRect.right - sRect.left);
+		    vscale = (float)(dRect.bottom - dRect.top) / (float)(sRect.bottom - sRect.top);
+		    scale = hscale < vscale ? hscale : vscale;
+
+		    int w = (sRect.right - sRect.left) * scale;
+		    int h = (sRect.bottom - sRect.left) * scale;
+
+		    dCrop.left = (dRect.right - dRect.left - w) / 2;
+		    dCrop.top = (dRect.bottom - dRect.top - h) / 2;
+		    dCrop.right = dCrop.left + w;
+		    dCrop.bottom = dCrop.top + h;
+
+		    if (dCrop.right != vhandle->Crop.right ||
+			    dCrop.bottom != vhandle->Crop.bottom ||
+			    dCrop.left != vhandle->Crop.left ||
+			    dCrop.top != vhandle->Crop.top) {
+
+			vhandle->Crop.left = dCrop.left;
+			vhandle->Crop.top = dCrop.top;
+			vhandle->Crop.right = dCrop.right;
+			vhandle->Crop.bottom = dCrop.bottom;
+			memset((void*)(vhandle->base), 0, vhandle->size);
+		    }
+		    err = mHwc->stretchBlit(mHwc, vhandle, handle, &dCrop, &sCrop, srcOri);
+		    window->queueBuffer(window, vBuffer, -1);
+		} else {
+		    ALOGE("dequeue NULL native buffer");
+		}
+	    }
+	}
     }
-
-    return 0;
+    return err;
 }
-#endif
 
 int HWComposer::fbCompositionComplete() {
     if (mHwc && hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1))
@@ -1070,15 +1065,13 @@ public:
             getLayer()->flags &= ~HWC_SKIP_LAYER;
         }
     }
-//#ifdef ACT_HARDWARE
-  //  virtual void setLayerFlags(int flags , bool enable) {
-    //    if (enable) {
-      //      getLayer()->flags |= flags;
-        //} else {
-          //  getLayer()->flags &= ~flags;
-       // }
-   // }
-//#endif
+    virtual void setAnimating(bool animating) {
+        if (animating) {
+            getLayer()->flags |= HWC_SCREENSHOT_ANIMATOR_LAYER;
+        } else {
+            getLayer()->flags &= ~HWC_SCREENSHOT_ANIMATOR_LAYER;
+        }
+    }
     virtual void setBlending(uint32_t blending) {
         getLayer()->blending = blending;
     }
@@ -1236,6 +1229,9 @@ void HWComposer::dump(String8& result) const {
                             "HWC",
                             "BACKGROUND",
                             "FB TARGET",
+#ifdef QCOM_HARDWARE
+                            "FB_BLIT",
+#endif
                             "UNKNOWN"};
                     if (type >= NELEM(compositionTypeName))
                         type = NELEM(compositionTypeName) - 1;

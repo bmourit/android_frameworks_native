@@ -25,6 +25,8 @@
 #include <EGL/eglext.h>
 #include <ui/mat4.h>
 
+#define EGL_NO_CONFIG ((EGLConfig)0)
+
 // ---------------------------------------------------------------------------
 namespace android {
 // ---------------------------------------------------------------------------
@@ -44,18 +46,21 @@ class RenderEngine {
     };
     static GlesVersion parseGlesVersion(const char* str);
 
+    EGLConfig mEGLConfig;
     EGLContext mEGLContext;
-    void setEGLContext(EGLContext ctxt);
+    void setEGLHandles(EGLConfig config, EGLContext ctxt);
 
-    virtual void bindImageAsFramebuffer(EGLImageKHR image, uint32_t* texName, uint32_t* fbName, uint32_t* status, bool useReadPixels, int reqWidth, int reqHeight) = 0;
-    virtual void unbindFramebuffer(uint32_t texName, uint32_t fbName, bool useReadPixels) = 0;
+    virtual void bindImageAsFramebuffer(EGLImageKHR image, uint32_t* texName, uint32_t* fbName, uint32_t* status) = 0;
+    virtual void unbindFramebuffer(uint32_t texName, uint32_t fbName) = 0;
 
 protected:
     RenderEngine();
     virtual ~RenderEngine() = 0;
 
 public:
-    static RenderEngine* create(EGLDisplay display, EGLConfig config);
+    static RenderEngine* create(EGLDisplay display, int hwcFormat);
+
+    static EGLConfig chooseEglConfig(EGLDisplay display, int format);
 
     // dump the extension strings. always call the base class.
     virtual void dump(String8& result);
@@ -76,9 +81,8 @@ public:
         RenderEngine& mEngine;
         uint32_t mTexName, mFbName;
         uint32_t mStatus;
-        bool mUseReadPixels;
     public:
-        BindImageAsFramebuffer(RenderEngine& engine, EGLImageKHR image, bool useReadPixels, int reqWidth, int reqHeight);
+        BindImageAsFramebuffer(RenderEngine& engine, EGLImageKHR image);
         ~BindImageAsFramebuffer();
         int getStatus() const;
     };
@@ -108,6 +112,7 @@ public:
     virtual size_t getMaxTextureSize() const = 0;
     virtual size_t getMaxViewportDims() const = 0;
 
+    EGLConfig getEGLConfig() const;
     EGLContext getEGLContext() const;
 };
 

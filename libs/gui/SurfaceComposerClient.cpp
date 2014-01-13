@@ -421,6 +421,15 @@ void Composer::setDisplayProjection(const sp<IBinder>& token,
     mForceSynchronous = true; // TODO: do we actually still need this?
 }
 
+status_t Composer::setOrientation(int orientation) {
+    sp<ISurfaceComposer> sm(ComposerService::getComposerService());
+    sp<IBinder> token(sm->getBuiltInDisplay(ISurfaceComposer::eDisplayIdMain));
+    DisplayState& s(getDisplayStateLocked(token));
+    s.orientation = orientation;
+    mForceSynchronous = true; // TODO: do we actually still need this?
+    return NO_ERROR;
+}
+
 // ---------------------------------------------------------------------------
 
 SurfaceComposerClient::SurfaceComposerClient()
@@ -605,6 +614,11 @@ status_t SurfaceComposerClient::setMatrix(const sp<IBinder>& id, float dsdx, flo
     return getComposer().setMatrix(this, id, dsdx, dtdx, dsdy, dtdy);
 }
 
+status_t SurfaceComposerClient::setOrientation(int32_t dpy, int orientation, uint32_t flags)
+{
+    return Composer::getInstance().setOrientation(orientation);
+}
+
 // ----------------------------------------------------------------------------
 
 void SurfaceComposerClient::setDisplaySurface(const sp<IBinder>& token,
@@ -641,15 +655,6 @@ void SurfaceComposerClient::unblankDisplay(const sp<IBinder>& token) {
     ComposerService::getComposerService()->unblank(token);
 }
 
-// TODO: Remove me.  Do not use.
-// This is a compatibility shim for one product whose drivers are depending on
-// this legacy function (when they shouldn't).
-status_t SurfaceComposerClient::getDisplayInfo(
-        int32_t displayId, DisplayInfo* info)
-{
-    return getDisplayInfo(getBuiltInDisplay(displayId), info);
-}
-
 #if defined(ICS_CAMERA_BLOB) || defined(MR0_CAMERA_BLOB)
 ssize_t SurfaceComposerClient::getDisplayWidth(int32_t displayId) {
     DisplayInfo info;
@@ -670,6 +675,15 @@ ssize_t SurfaceComposerClient::getDisplayOrientation(int32_t displayId) {
 }
 #endif
 
+// TODO: Remove me.  Do not use.
+// This is a compatibility shim for one product whose drivers are depending on
+// this legacy function (when they shouldn't).
+status_t SurfaceComposerClient::getDisplayInfo(
+        int32_t displayId, DisplayInfo* info)
+{
+    return getDisplayInfo(getBuiltInDisplay(displayId), info);
+}
+
 // ----------------------------------------------------------------------------
 
 #ifndef FORCE_SCREENSHOT_CPU_PATH
@@ -685,14 +699,6 @@ status_t ScreenshotClient::capture(
         uint32_t minLayerZ, uint32_t maxLayerZ) {
     sp<ISurfaceComposer> s(ComposerService::getComposerService());
     if (s == NULL) return NO_INIT;
-
-    int format = 0;
-    producer->query(NATIVE_WINDOW_FORMAT,&format);
-    if (format == PIXEL_FORMAT_RGBA_8888) {
-        /* For some reason, this format fails badly */
-        return BAD_VALUE;
-    }
-
     return s->captureScreen(display, producer,
             reqWidth, reqHeight, minLayerZ, maxLayerZ,
             SS_CPU_CONSUMER);
@@ -721,19 +727,6 @@ status_t ScreenshotClient::update(const sp<IBinder>& display,
         uint32_t minLayerZ, uint32_t maxLayerZ) {
     sp<ISurfaceComposer> s(ComposerService::getComposerService());
     if (s == NULL) return NO_INIT;
-#ifdef USE_MHEAP_SCREENSHOT
-    int ret = -1;
-    mHeap = 0;
-    ret = s->captureScreen(display, &mHeap,
-            &mBuffer.width, &mBuffer.height, reqWidth, reqHeight,
-            minLayerZ, maxLayerZ);
-    if (ret == NO_ERROR) {
-        mBuffer.format = PIXEL_FORMAT_RGBA_8888;
-        mBuffer.stride = mBuffer.width;
-        mBuffer.data = (uint8_t *)mHeap->getBase();
-    }
-    return ret;
-#else
     sp<CpuConsumer> cpuConsumer = getCpuConsumer();
 
     if (mHaveBuffer) {
@@ -752,7 +745,6 @@ status_t ScreenshotClient::update(const sp<IBinder>& display,
         }
     }
     return err;
-#endif
 }
 
 status_t ScreenshotClient::update(const sp<IBinder>& display) {
@@ -765,16 +757,12 @@ status_t ScreenshotClient::update(const sp<IBinder>& display,
 }
 
 void ScreenshotClient::release() {
-#ifdef USE_MHEAP_SCREENSHOT
-    mHeap = 0;
-#else
     if (mHaveBuffer) {
         mCpuConsumer->unlockBuffer(mBuffer);
         memset(&mBuffer, 0, sizeof(mBuffer));
         mHaveBuffer = false;
     }
     mCpuConsumer.clear();
-#endif
 }
 
 void const* ScreenshotClient::getPixels() const {

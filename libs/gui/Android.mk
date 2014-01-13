@@ -39,6 +39,23 @@ LOCAL_SHARED_LIBRARIES := \
 	libutils \
 	liblog
 
+ifeq ($(call is-board-platform-in-list, mpq8092), true)
+    LOCAL_CFLAGS            += -DVFM_AVAILABLE
+endif
+
+# Executed only on QCOM BSPs
+ifeq ($(TARGET_USES_QCOM_BSP),true)
+ifneq ($(TARGET_QCOM_DISPLAY_VARIANT),)
+    LOCAL_C_INCLUDES        += hardware/qcom/display-$(TARGET_QCOM_DISPLAY_VARIANT)/libgralloc
+    LOCAL_C_INCLUDES        += $(TOP)/hardware/qcom/display-$(TARGET_QCOM_DISPLAY_VARIANT)/libqdutils
+else
+    LOCAL_C_INCLUDES        += hardware/qcom/display/$(TARGET_BOARD_PLATFORM)/libgralloc
+    LOCAL_C_INCLUDES        += $(TOP)/hardware/qcom/display/$(TARGET_BOARD_PLATFORM)/libqdutils
+endif
+    LOCAL_C_INCLUDES        += $(TARGET_OUT_HEADERS)/vpu/
+    LOCAL_CFLAGS            += -DQCOM_BSP
+    LOCAL_SHARED_LIBRARIES  += libqdMetaData
+endif
 
 LOCAL_MODULE:= libgui
 
@@ -48,12 +65,10 @@ endif
 ifeq ($(TARGET_BOARD_PLATFORM), tegra3)
 	LOCAL_CFLAGS += -DDONT_USE_FENCE_SYNC
 endif
-ifeq ($(TARGET_DOESNT_USE_FENCE_SYNC), true)
+ifeq ($(TARGET_QCOM_DISPLAY_VARIANT), legacy)
 	LOCAL_CFLAGS += -DDONT_USE_FENCE_SYNC
 endif
-ifeq ($(BOARD_USE_MHEAP_SCREENSHOT), true)
-	LOCAL_CFLAGS += -DUSE_MHEAP_SCREENSHOT
-endif
+
 ifeq ($(SENSORS_NEED_SETRATE_ON_ENABLE), true)
         LOCAL_CFLAGS += -DSENSORS_SETRATE_ON_ENABLE
 endif

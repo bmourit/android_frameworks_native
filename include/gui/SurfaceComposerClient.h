@@ -39,9 +39,6 @@ namespace android {
 
 class DisplayInfo;
 class Composer;
-//#ifdef USE_MHEAP_SCREENSHOT
-class IMemoryHeap;
-//#endif
 class ISurfaceComposerClient;
 class IGraphicBufferProducer;
 class Region;
@@ -122,7 +119,7 @@ public:
     //! Close a composer transaction on all active SurfaceComposerClients.
     static void closeGlobalTransaction(bool synchronous = false);
 
-    //static int setOrientation(int32_t dpy, int orientation, uint32_t flags);
+    static int setOrientation(int32_t dpy, int orientation, uint32_t flags);
 
     //! Flag the currently open transaction as an animation transaction.
     static void setAnimationTransaction();
@@ -182,8 +179,6 @@ public:
             uint32_t minLayerZ, uint32_t maxLayerZ);
 
 private:
-    sp<IMemoryHeap> mHeap;
-
     mutable sp<CpuConsumer> mCpuConsumer;
     mutable sp<BufferQueue> mBufferQueue;
     CpuConsumer::LockedBuffer mBuffer;

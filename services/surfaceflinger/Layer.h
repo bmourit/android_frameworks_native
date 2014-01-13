@@ -258,18 +258,18 @@ public:
     // Updates the transform hint in our SurfaceFlingerConsumer to match
     // the current orientation of the display device.
     void updateTransformHint(const sp<const DisplayDevice>& hw) const;
+#ifdef QCOM_BSP
+    virtual bool isExtOnly() const;
+    virtual bool isIntOnly() const;
+    virtual bool isSecureDisplay() const;
+    virtual bool isYuvLayer() const;
+#endif
 
     /*
      * returns the rectangle that crops the content of the layer and scales it
      * to the layer's size.
      */
     Rect getContentCrop() const;
-
-    /*
-     * returns the transform bits (90 rotation / h-flip / v-flip) of the
-     * layer's content
-     */
-    virtual uint32_t getContentTransform() const;
 
     // -----------------------------------------------------------------------
 

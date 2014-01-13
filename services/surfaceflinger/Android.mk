@@ -51,16 +51,15 @@ ifeq ($(TARGET_DISABLE_TRIPLE_BUFFERING),true)
 	LOCAL_CFLAGS += -DTARGET_DISABLE_TRIPLE_BUFFERING
 endif
 
-ifeq ($(BOARD_EGL_NEEDS_LEGACY_FB),true)
-	LOCAL_CFLAGS += -DBOARD_EGL_NEEDS_LEGACY_FB
-endif
-
 ifeq ($(TARGET_FORCE_HWC_FOR_VIRTUAL_DISPLAYS),true)
     LOCAL_CFLAGS += -DFORCE_HWC_COPY_FOR_VIRTUAL_DISPLAYS
 endif
 
-ifeq ($(BOARD_EGL_NEEDS_FNW),true)
-    LOCAL_CFLAGS += -DEGL_NEEDS_FNW
+ifeq ($(BOARD_EGL_NEEDS_LEGACY_FB),true)
+	LOCAL_CFLAGS += -DBOARD_EGL_NEEDS_LEGACY_FB
+        ifeq ($(TARGET_QCOM_DISPLAY_VARIANT), legacy)
+	    LOCAL_CFLAGS += -DEGL_NEEDS_FNW
+        endif
 endif
 
 ifneq ($(NUM_FRAMEBUFFER_SURFACE_BUFFERS),)
@@ -69,10 +68,6 @@ endif
 
 ifeq ($(TARGET_RUNNING_WITHOUT_SYNC_FRAMEWORK),true)
     LOCAL_CFLAGS += -DRUNNING_WITHOUT_SYNC_FRAMEWORK
-endif
-
-ifeq ($(BOARD_USE_MHEAP_SCREENSHOT),true)
-    LOCAL_CFLAGS += -DUSE_MHEAP_SCREENSHOT
 endif
 
 # See build/target/board/generic/BoardConfig.mk for a description of this setting.
@@ -113,9 +108,17 @@ LOCAL_SHARED_LIBRARIES := \
 	libui \
 	libgui
 
-ifeq ($(BOARD_USE_HWC_FOR_WFD), true)
-        LOCAL_CFLAGS += -DENABLE_HWC_FOR_WFD
-        LOCAL_SHARED_LIBRARIES += libsync
+ifeq ($(TARGET_USES_QCOM_BSP), true)
+ifneq ($(TARGET_QCOM_DISPLAY_VARIANT),)
+    LOCAL_C_INCLUDES += hardware/qcom/display-$(TARGET_QCOM_DISPLAY_VARIANT)/libgralloc
+else
+    LOCAL_C_INCLUDES += hardware/qcom/display/$(TARGET_BOARD_PLATFORM)/libgralloc
+endif
+    LOCAL_CFLAGS += -DQCOM_BSP
+endif
+
+ifeq ($(TARGET_BOARD_PLATFORM),ATM702X)
+	LOCAL_SHARED_LIBRARIES += libsync
 endif
 
 LOCAL_MODULE:= libsurfaceflinger

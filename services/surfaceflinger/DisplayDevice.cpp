@@ -29,13 +29,9 @@
 
 #include <gui/Surface.h>
 
-#ifdef EGL_NEEDS_FNW
+#ifdef BOARD_EGL_NEEDS_LEGACY_FB
 #include <ui/FramebufferNativeWindow.h>
 #endif
-
-#include <GLES/gl.h>
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
 
 #include <hardware/gralloc.h>
 
@@ -79,11 +75,11 @@ DisplayDevice::DisplayDevice(
       mSecureLayerVisible(false),
       mScreenAcquired(false),
       mLayerStack(NO_LAYER_STACK),
+      mHardwareOrientation(0),
       mOrientation()
 {
     mNativeWindow = new Surface(producer, false);
-
-#ifndef EGL_NEEDS_FNW
+#ifndef BOARD_EGL_NEEDS_LEGACY_FB
     ANativeWindow* const window = mNativeWindow.get();
 #else
     ANativeWindow* const window = new FramebufferNativeWindow();
@@ -127,7 +123,12 @@ DisplayDevice::DisplayDevice(
     // was created with createDisplay().
     switch (mType) {
         case DISPLAY_PRIMARY:
+            char value[PROPERTY_VALUE_MAX];
             mDisplayName = "Built-in Screen";
+
+            /* hwrotation applies only to the primary display */
+            property_get("ro.sf.hwrotation", value, "0");
+            mHardwareOrientation = atoi(value);
             break;
         case DISPLAY_EXTERNAL:
             mDisplayName = "HDMI Screen";
@@ -136,21 +137,19 @@ DisplayDevice::DisplayDevice(
             mDisplayName = "Virtual Screen";    // e.g. Overlay #n
             break;
     }
+#ifdef QCOM_HARDWARE
+    char property[PROPERTY_VALUE_MAX];
+    int panelOrientation = DisplayState::eOrientationDefault;
+    // Set the panel orientation from the property.
+    property_get("persist.panel.orientation", property, "0");
+    panelOrientation = atoi(property) / 90;
+#endif
 
     // initialize the display orientation transform.
+#ifdef QCOM_HARDWARE
+    setProjection(panelOrientation, mViewport, mFrame);
+#else
     setProjection(DisplayState::eOrientationDefault, mViewport, mFrame);
-
-#ifdef EGL_ANDROID_swap_rectangle
-    if (eglSetSwapRectangleANDROID(display, surface,
-            0, 0, mDisplayWidth, mDisplayHeight) == EGL_TRUE) {
-        // This could fail if this extension is not supported by this
-        // specific surface (of config)
-        mFlags |= SWAP_RECTANGLE;
-    }
-    // when we have the choice between PARTIAL_UPDATES and SWAP_RECTANGLE
-    // choose PARTIAL_UPDATES, which should be more efficient
-    if (mFlags & PARTIAL_UPDATES)
-        mFlags &= ~SWAP_RECTANGLE;
 #endif
 }
 
@@ -248,17 +247,6 @@ status_t DisplayDevice::prepareFrame(const HWComposer& hwc) const {
 }
 
 void DisplayDevice::swapBuffers(HWComposer& hwc) const {
-
-#ifdef ENABLE_HWC_FOR_WFD
-    if (mBufferHandle) {
-        // bypass overlay virtual display to 3D to do compostion.
-        if (!strncmp(mDisplayName, "Overlay", 7)) {
-            hwc.setFramebufferHandle(mHwcDisplayId, NULL);
-        } else {
-            hwc.setFramebufferHandle(mHwcDisplayId, mBufferHandle);
-        }
-    }
-#endif
     // We need to call eglSwapBuffers() if:
     //  (1) we don't have a hardware composer, or
     //  (2) we did GLES composition this frame, and either
@@ -404,9 +392,7 @@ status_t DisplayDevice::orientationToTransfrom(
         int orientation, int w, int h, Transform* tr)
 {
     uint32_t flags = 0;
-    char value[PROPERTY_VALUE_MAX];
-    property_get("ro.sf.hwrotation", value, "0");
-    int additionalRot = atoi(value);
+    int additionalRot = this->getHardwareOrientation();
 
     if (additionalRot) {
         additionalRot /= 90;
@@ -453,7 +439,11 @@ void DisplayDevice::setProjection(int orientation,
     if (!frame.isValid()) {
         // the destination frame can be invalid if it has never been set,
         // in that case we assume the whole display frame.
-        frame = Rect(w, h);
+        if ((mHardwareOrientation/90) & DisplayState::eOrientationSwapMask) {
+            frame = Rect(h, w);
+        } else {
+            frame = Rect(w, h);
+        }
     }
 
     if (viewport.isEmpty()) {
@@ -506,6 +496,10 @@ void DisplayDevice::setProjection(int orientation,
     mOrientation = orientation;
     mViewport = viewport;
     mFrame = frame;
+}
+
+int DisplayDevice::getHardwareOrientation() {
+    return mHardwareOrientation;
 }
 
 void DisplayDevice::dump(String8& result) const {

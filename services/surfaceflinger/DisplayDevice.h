@@ -159,9 +159,12 @@ public:
      */
     uint32_t getPageFlipCount() const;
     void dump(String8& result) const;
+
 #ifdef ACT_HARDWARE
-	ANativeWindow * getNativeWindow()const	{ return mNativeWindow.get(); }
+    ANativeWindow * getNativeWindow()const	{ return mNativeWindow.get(); }
 #endif
+
+    int getHardwareOrientation();
 
 private:
     /*
@@ -204,10 +207,11 @@ private:
     /*
      * Transaction state
      */
-    static status_t orientationToTransfrom(int orientation,
+    status_t orientationToTransfrom(int orientation,
             int w, int h, Transform* tr);
 
     uint32_t mLayerStack;
+    int mHardwareOrientation;
     int mOrientation;
     // user-provided visible area of the layer stack
     Rect mViewport;
@@ -217,10 +221,6 @@ private:
     Rect mScissor;
     Transform mGlobalTransform;
     bool mNeedsFiltering;
-
-#ifdef ENABLE_HWC_FOR_WFD
-    buffer_handle_t mBufferHandle;
-#endif
 };
 
 }; // namespace android
